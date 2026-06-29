@@ -1,8 +1,9 @@
 import sys
 import os
 
-# Add parent directory to path so we can import app modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# webjob_scheduler.py resolves the app root itself (via Azure's HOME env var),
+# so this file just needs to be able to import its sibling module.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from webjob_scheduler import run
 
