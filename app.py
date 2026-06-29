@@ -1005,13 +1005,16 @@ def get_session_from_request():
 # No more restore_to_reminder_store() — the scheduler reads directly
 # from the database (database.py) on every job run now, so there's
 # nothing to pre-load into memory at startup.
-with app.app_context():
-    try:
-        from scheduler import init_scheduler
-        init_scheduler(elentra_login, fetch_events, format_events)
-        print("[APP] ✅ Scheduler started!", flush=True)
-    except Exception as ex:
-        print(f"[APP] ❌ Scheduler failed: {ex}", flush=True)
+# with app.app_context():
+#     try:
+#         from scheduler import init_scheduler
+#         init_scheduler(elentra_login, fetch_events, format_events)
+#         print("[APP] ✅ Scheduler started!", flush=True)
+#     except Exception as ex:
+#         print(f"[APP] ❌ Scheduler failed: {ex}", flush=True)
+
+# REPLACE WITH:
+print("[APP] Scheduler running as WebJob - not starting in-app scheduler", flush=True)
 
 # ── Routes ───────────────────────────────────────────
 
