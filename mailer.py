@@ -1100,7 +1100,7 @@ This is an automated notification from your NTU Learning Assistant.{_unsubscribe
                 <td style="padding:10px 16px;font-size:13px;font-weight:600;color:#1a1a2e;">#{reference}</td>
             </tr>
             <tr style="background:#fff;border-bottom:1px solid #e9ecef;">
-                <td style="padding:10px 16px;font-size:13px;color:#868e96;">Date</td>
+                <td style="padding:10px 16px;font-size:13px;color:#868e96;">Date(s)</td>
                 <td style="padding:10px 16px;font-size:13px;color:#1a1a2e;">{from_date}</td>
             </tr>
             <tr style="background:#f9fafb;">

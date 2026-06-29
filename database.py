@@ -57,6 +57,20 @@ _cache = {}
 _cache_lock = Lock()
 _cache_loaded = False
 
+def _norm_username(username):
+    """
+    Normalize a username before using it as a cache key / Table RowKey.
+
+    Root cause of "LOA rejection email re-sent every login": usernames were
+    used as-is (case-sensitive) for the Table Storage RowKey. If a student
+    logs in with different capitalization on different days (autocapitalize,
+    copy-paste, etc.), each variant created a SEPARATE row with its own empty
+    loa_rejection_notified list — so the same rejection looked "new" again
+    and got emailed again. Normalizing to lowercase+stripped here means every
+    casing variant always maps to the same row, so the dedup list is never lost.
+    """
+    return (username or "").strip().lower()
+
 # ── AZURE TABLE STORAGE (optional) ──────────────────────
 _table_client = None
 
@@ -157,7 +171,7 @@ def _load_cache():
                     if username:
                         # Decrypt password when loading from Azure
                         encrypted_pw = entity.get("password", "")
-                        _cache[username] = {
+                        _cache[_norm_username(username)] = {
                             "username": username,
                             "password": decrypt_password(encrypted_pw),
                             "email": entity.get("email", ""),
@@ -176,7 +190,7 @@ def _load_cache():
         # Fallback to JSON
         data = _load_json()
         for username, user_data in data.items():
-            _cache[username] = user_data
+            _cache[_norm_username(username)] = user_data
         _cache_loaded = True
         print(f"[DB] Loaded {len(_cache)} students from JSON")
 
@@ -202,7 +216,7 @@ def _force_load_cache():
                     username = entity.get("username") or entity.get("RowKey")
                     if username:
                         encrypted_pw = entity.get("password", "")
-                        new_cache[username] = {
+                        new_cache[_norm_username(username)] = {
                             "username": username,
                             "password": decrypt_password(encrypted_pw),
                             "email": entity.get("email", ""),
@@ -223,30 +237,31 @@ def _force_load_cache():
         data = _load_json()
         new_cache = {}
         for username, user_data in data.items():
-            new_cache[username] = user_data
+            new_cache[_norm_username(username)] = user_data
         _cache = new_cache
         _cache_loaded = True
         print(f"[DB] Force-loaded {len(_cache)} students from JSON")
 
 def _save_to_json(username, data):
-    """Save a single student to JSON file."""
+    """Save a single student to JSON file, keyed by normalized username."""
     all_data = _load_json()
-    all_data[username] = data
+    all_data[_norm_username(username)] = data
     return _save_json(all_data)
 
 def _save_to_azure(username, data):
-    """Save a single student to Azure Table Storage."""
+    """Save a single student to Azure Table Storage, keyed by normalized username."""
     if STORAGE_TYPE != "table" or not _init_azure_table():
         return False
     
     try:
         # Encrypt password before saving to Azure
         encrypted_pw = encrypt_password(data.get("password", ""))
+        row_key = _norm_username(username)
         
         entity = {
             "PartitionKey": "student",
-            "RowKey": username,
-            "username": username,
+            "RowKey": row_key,
+            "username": data.get("username", username),
             "password": encrypted_pw,
             "email": data.get("email", ""),
             "registered_at": data.get("registered_at", ""),
@@ -264,12 +279,15 @@ def _save_to_azure(username, data):
 # ── PUBLIC INTERFACE ──────────────────────────────────────
 
 def get_student_config(username):
-    """Get all config for a student. Returns None if not found."""
+    """Get all config for a student. Returns None if not found.
+    Lookup is by normalized username, so casing differences between
+    logins always resolve to the same record."""
     _load_cache()
+    key = _norm_username(username)
     
     with _cache_lock:
-        if username in _cache:
-            return _cache[username].copy()
+        if key in _cache:
+            return _cache[key].copy()
     
     return None
 
@@ -286,6 +304,7 @@ def get_all_reminder_students():
         for username, data in _cache.items():
             if data.get("email"):
                 result[username] = {
+                    "username": data.get("username", username),
                     "password": data.get("password", ""),  # Already decrypted
                     "email": data.get("email", ""),
                     "preferences": data.get("preferences", {}),
@@ -295,19 +314,24 @@ def get_all_reminder_students():
     return result
 
 def save_student_config(username, **kwargs):
-    """Save student config. Creates or updates."""
+    """Save student config. Creates or updates.
+    Cache key / Table RowKey is always the normalized username so that
+    logging in with different capitalization never creates a duplicate
+    record (which previously reset the loa_rejection_notified dedup list
+    and caused the same LOA rejection to be re-emailed)."""
     _load_cache()
+    key = _norm_username(username)
     
     # Get existing data
     existing = {}
     with _cache_lock:
-        if username in _cache:
-            existing = _cache[username]
+        if key in _cache:
+            existing = _cache[key]
     
     # Merge with new data
     now = datetime.now().isoformat()
     data = {
-        "username": username,
+        "username": existing.get("username", username),
         "password": kwargs.get("password", existing.get("password", "")),
         "email": kwargs.get("email", existing.get("email", "")),
         "registered_at": existing.get("registered_at", now),
@@ -319,7 +343,7 @@ def save_student_config(username, **kwargs):
     
     # Update cache
     with _cache_lock:
-        _cache[username] = data
+        _cache[key] = data
     
     # Save to JSON (always)
     success = _save_to_json(username, data)
@@ -335,18 +359,19 @@ def save_student_config(username, **kwargs):
     return success
 
 def delete_student_config(username):
-    """Remove a student's config."""
+    """Remove a student's config (looked up by normalized username)."""
     _load_cache()
+    key = _norm_username(username)
     
     # Remove from cache
     with _cache_lock:
-        if username in _cache:
-            del _cache[username]
+        if key in _cache:
+            del _cache[key]
     
     # Remove from JSON
     all_data = _load_json()
-    if username in all_data:
-        del all_data[username]
+    if key in all_data:
+        del all_data[key]
         _save_json(all_data)
     
     # Remove from Azure
@@ -354,7 +379,7 @@ def delete_student_config(username):
         try:
             _table_client.delete_entity(
                 partition_key="student",
-                row_key=username
+                row_key=key
             )
         except Exception as e:
             print(f"[DB] Azure delete error for {username}: {e}")

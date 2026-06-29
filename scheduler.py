@@ -80,8 +80,17 @@ def _get_elentra_session(username, info, force_new=False):
     Return a (session, jwt_token) pair for this student, reusing a cached
     session if one was created recently. Falls back to a fresh password
     login if there's no valid cached session, or if force_new=True.
+
+    NOTE: `username` here may be a normalized (lowercased) storage key —
+    database.py normalizes usernames so that login-casing differences don't
+    create duplicate student records (the fix for LOA rejection emails being
+    re-sent every login). That normalization must NOT leak into the actual
+    Elentra login call, since Elentra's own login may be case-sensitive.
+    `info["username"]` always holds the original, as-typed casing, so we use
+    that for the real login while still caching/logging under the lookup key.
     """
     now = time.time()
+    login_username = info.get("username", username)
 
     if not force_new:
         with _session_cache_lock:
@@ -95,7 +104,7 @@ def _get_elentra_session(username, info, force_new=False):
         return None, None
 
     try:
-        session, jwt = _elentra_login_fn(username, info["password"])
+        session, jwt = _elentra_login_fn(login_username, info["password"])
         print(f"[SESSION] {username}: ✅ logged in via password")
         with _session_cache_lock:
             _session_cache[username] = {
@@ -843,43 +852,18 @@ def check_loa_rejections():
     Runs every 30 minutes.
     Checks each student's LOA/MC (absence) applications for any that were
     rejected in the last 7 days, and emails them once per rejection.
-
-    This mirrors the LOA-rejection logic that used to live only inside the
-    /link (login) endpoint in app.py — that version only ran when a student
-    actually logged back into the app, so a rejection could go unnoticed
-    indefinitely if they didn't. This makes it a recurring background check
-    like every other reminder type, using the same 7-day window and the same
-    loa_rejection_notified dedup list so a student is never emailed twice
-    about the same rejection.
+    Consolidates multi-day absences into a single email with date range.
     """
     if not _loa_reminder_lock.acquire(blocking=False):
         print("[LOA] Another LOA rejection job already running, skipping")
         return
-
-    # try:
-    #     from mailer import send_loa_rejection_email
-    #     from app import fetch_absences
-    #     from database import save_student_config
-
-    #     if not _reminder_store:
-    #         print("[LOA] No reminder store")
-    #         return
-
-    #     for username, info in list(_reminder_store.items()):
-    #         prefs = info.get("preferences", {})
-    #         if not prefs.get("loa_rejection", True):
-    #             continue
-
-    #         email = info.get("email")
-    #         if not email:
-    #             continue
 
     try:
         from mailer import send_loa_rejection_email
         from app import fetch_absences
         from database import save_student_config, get_all_reminder_students
  
-        # FIXED: Read from database (source of truth), not in-memory store
+        # Read from database (source of truth)
         students = {}
         try:
             students = get_all_reminder_students()
@@ -920,6 +904,8 @@ def check_loa_rejections():
                 seven_days_ago = datetime.now() - timedelta(days=7)
                 already_notified = info.get("loa_rejection_notified", [])
 
+                # ── GROUP REJECTIONS BY REFERENCE CODE ──
+                rejected_by_ref = {}
                 for r in sorted_requests:
                     if not isinstance(r, dict) or r.get("status", {}).get("title") != "Rejected":
                         continue
@@ -933,23 +919,59 @@ def check_loa_rejections():
                     if ref_code in already_notified:
                         continue
 
-                    from_dt = datetime.fromtimestamp(r["from"]).strftime("%Y-%m-%d") if r.get("from") else "N/A"
-                    reason = r.get("reason", {}).get("title", "Unknown reason")
+                    if ref_code not in rejected_by_ref:
+                        rejected_by_ref[ref_code] = {
+                            "dates": [],
+                            "reason": r.get("reason", {}).get("title", "Unknown reason"),
+                            "created_date": created_dt,
+                            "from_ts": r.get("from"),
+                            "to_ts": r.get("to")
+                        }
+                    
+                    # Store the date range for this entry
+                    from_dt = datetime.fromtimestamp(r["from"]).strftime("%d %b %Y") if r.get("from") else "N/A"
+                    to_dt = datetime.fromtimestamp(r["to"]).strftime("%d %b %Y") if r.get("to") else "N/A"
+                    rejected_by_ref[ref_code]["dates"].append((from_dt, to_dt))
+
+                # ── SEND ONE EMAIL PER REFERENCE CODE ──
+                for ref_code, data in rejected_by_ref.items():
+                    # Format date display
+                    date_ranges = data["dates"]
+                    if len(date_ranges) == 1:
+                        from_date, to_date = date_ranges[0]
+                        if from_date == to_date:
+                            date_display = from_date
+                        else:
+                            date_display = f"{from_date} to {to_date}"
+                    else:
+                        # Multiple days: show full range
+                        first_from = date_ranges[0][0]
+                        last_to = date_ranges[-1][1]
+                        # Check if it's a continuous range
+                        if len(date_ranges) > 1:
+                            date_display = f"{first_from} to {last_to}"
+                        else:
+                            date_display = f"{first_from} - {last_to}"
+                        
+                        # Also list individual dates if they're not continuous
+                        if len(date_ranges) > 1:
+                            date_display += f" ({len(date_ranges)} days)"
 
                     try:
                         send_loa_rejection_email(
                             to_email=email,
                             username=username,
                             reference=ref_code,
-                            from_date=from_dt,
-                            reason=reason
+                            from_date=date_display,
+                            reason=data["reason"]
                         )
+                        
                         already_notified.append(ref_code)
                         info["loa_rejection_notified"] = already_notified
-                        # print(f"[LOA] {username}: rejection email sent for ref {ref_code}")
 
-                        print(f"[LOA] {username}: ✅ rejection email sent for ref {ref_code}")
+                        print(f"[LOA] {username}: ✅ rejection email sent for ref {ref_code} (consolidated {len(date_ranges)} day(s))")
 
+                        # Save immediately to prevent duplicates
                         try:
                             save_student_config(
                                 username=username,
