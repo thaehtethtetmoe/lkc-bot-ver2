@@ -4,6 +4,19 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, date, timedelta
 
+# ── Shared: link back to the web app for managing/turning off alerts ──
+APP_URL = os.getenv("APP_URL", "https://webappintern2026-c6bzgbevbjerc2gr.southeastasia-01.azurewebsites.net")
+
+
+def _unsubscribe_html(purple="#4a1259"):
+    """Standard 'manage/turn off alerts' line, for use inside the body section of any email."""
+    return f"""<p style="margin:16px 0 0;font-size:12px;color:#888;">Want to stop receiving these alerts? <a href="{APP_URL}" style="color:{purple};text-decoration:underline;">Turn off reminders in the web app</a>.</p>"""
+
+
+def _unsubscribe_text():
+    """Standard 'manage/turn off alerts' line, for use inside the plain-text body of any email."""
+    return f"""\n\nWant to stop receiving these alerts? Turn off reminders in the web app:\n{APP_URL}"""
+
 
 def send_reminder_email(to_email: str, username: str, events: list):
     """
@@ -23,7 +36,7 @@ def send_reminder_email(to_email: str, username: str, events: list):
 
     # ── Plain text version ──────────────────────
     if not events:
-        text_body = f"Hi {username},\n\nYou have no learning events scheduled for tomorrow."
+        text_body = f"Hi {username},\n\nYou have no learning events scheduled for tomorrow." + _unsubscribe_text()
     else:
         lines = [f"Hi {username},\n",
                  f"Here are your learning events for {tomorrow}:\n"]
@@ -36,7 +49,7 @@ def send_reminder_email(to_email: str, username: str, events: list):
                 lines.append(f"  ⚠️  Attendance required")
             lines.append("")
         lines.append("Have a good time and see you tomorrow!")
-        text_body = "\n".join(lines)
+        text_body = "\n".join(lines) + _unsubscribe_text()
 
     # ── HTML version ────────────────────────────
     if not events:
@@ -128,6 +141,7 @@ def send_reminder_email(to_email: str, username: str, events: list):
         This reminder was sent automatically from the NTU MBBS Learning Assistant.<br>
         Log in to the assistant to view your full upcoming schedule.
       </p>
+      {_unsubscribe_html()}
     </div>
 
     <!-- Footer -->
@@ -187,7 +201,7 @@ def send_weekly_summary_email(to_email: str, username: str, events: list):
     # ── Plain text ───────────────────────────────
     if not events:
         text_body = (f"Hi {username},\n\nYou have no learning events scheduled "
-                     f"this week.\n\nHave a great week!")
+                     f"this week.\n\nHave a great week!") + _unsubscribe_text()
     else:
         lines = [f"Hi {username},\n",
                  f"Here is your learning schedule for this week:\n",
@@ -201,7 +215,7 @@ def send_weekly_summary_email(to_email: str, username: str, events: list):
                 lines.append(f"    {e['time']} | {e['location'] or 'TBC'} | "
                               f"Attendance: {e['attendance']}")
         lines.append("\nHave a productive week!")
-        text_body = "\n".join(lines)
+        text_body = "\n".join(lines) + _unsubscribe_text()
  
     # ── HTML ─────────────────────────────────────
     if not events:
@@ -339,6 +353,7 @@ def send_weekly_summary_email(to_email: str, username: str, events: list):
           This summary was sent automatically every Monday at 8:00 AM SGT.<br>
           Log in to the assistant to ask questions about your schedule.
       </p>
+      {_unsubscribe_html(LKC_PURPLE)}
     </div>
  
     <!-- Footer -->
@@ -406,7 +421,7 @@ def send_attendance_alert_email(to_email: str, username: str, events: list):
 
 Please mark your attendance now.
 
-This is an automated reminder from your NTU Learning Assistant."""
+This is an automated reminder from your NTU Learning Assistant.{_unsubscribe_text()}"""
     
     html_body = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/></head>
@@ -435,6 +450,7 @@ This is an automated reminder from your NTU Learning Assistant."""
             <p style="margin:0;font-size:13px;color:#2e7d32;"><strong> Class is starting!</strong> {'Mark your attendance now on the Elentra dashboard.' if attendance_display == 'Required' else 'You can join the session.'}</p>
         </div>
         <p style="margin:24px 0 0;font-size:13px;color:#868e96;line-height:1.6;">This reminder was sent automatically when your class started.<br>Log in to the assistant to manage your reminders.</p>
+        {_unsubscribe_html(PURPLE)}
     </div>
     <div style="background:{DARK_FOOTER};padding:14px 32px;">
         <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.5);text-align:center;">NTU Lee Kong Chian School of Medicine · Class Start Reminder</p>
@@ -484,7 +500,7 @@ def send_mc_reminder_email(to_email: str, username: str, events: list):
     lines.append("🏥 If you were absent — submit your MC/LOA here:")
     lines.append("   https://ntu.elentra.cloud/profile/absences")
     lines.append("\nThis is an automated reminder from your NTU Learning Assistant.")
-    text_body = "\n".join(lines)
+    text_body = "\n".join(lines) + _unsubscribe_text()
 
     event_cards = ""
     for event in events:
@@ -519,6 +535,7 @@ def send_mc_reminder_email(to_email: str, username: str, events: list):
             <p style="margin:0;font-size:13px;color:#856404;"><strong> If you were absent:</strong> <a href="https://ntu.elentra.cloud/profile/absences" style="color:#856404;font-weight:600;">Submit your MC/LOA here</a> within 7 term days.</p>
         </div>
         <p style="margin:24px 0 0;font-size:13px;color:#868e96;line-height:1.6;">This reminder was sent automatically after your classes ended.<br>Log in to the assistant to manage your reminder preferences.</p>
+        {_unsubscribe_html(PURPLE)}
     </div>
     <div style="background:{DARK_FOOTER};padding:14px 32px;">
         <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.5);text-align:center;">NTU Lee Kong Chian School of Medicine · Post-Class MC Reminder</p>
@@ -563,7 +580,7 @@ def send_event_reminder_email(to_email: str, username: str, event: dict):
 📖 Course:     {event['course_code']}
 📋 Attendance: {event['attendance']}
 
-See you there!"""
+See you there!{_unsubscribe_text()}"""
 
     html_body = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/></head>
@@ -586,6 +603,7 @@ See you there!"""
             </table>
         </div>
         <p style="margin:24px 0 0;font-size:13px;color:#868e96;line-height:1.6;">This reminder was sent automatically 1 hour before your session.<br>Good luck and have a great session!</p>
+        {_unsubscribe_html(PURPLE)}
     </div>
     <div style="background:{PURPLE};padding:14px 32px;">
         <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.6);text-align:center;">NTU Lee Kong Chian School of Medicine · 1-Hour Session Reminder</p>
@@ -644,7 +662,7 @@ def send_ending_class_reminder(to_email: str, username: str, events: list):
     lines.append("⚠️ Don't forget to mark your attendance before class ends!")
     lines.append("\nThis is an automated reminder from your NTU Learning Assistant.")
     
-    text_body = "\n".join(lines)
+    text_body = "\n".join(lines) + _unsubscribe_text()
     
     # ── HTML version ────────────────────────────
     event_cards = ""
@@ -757,6 +775,7 @@ def send_ending_class_reminder(to_email: str, username: str, events: list):
         This reminder was sent automatically 15 minutes before class ends.<br>
         Log in to the assistant to manage your reminders.
       </p>
+      {_unsubscribe_html(LKC_PURPLE)}
     </div>
 
     <!-- Footer -->
@@ -791,7 +810,7 @@ def send_ending_class_reminder(to_email: str, username: str, events: list):
 def send_preferences_confirmation(to_email, username, preferences, bus_config=None, selected_modules=None):
     """
     Send a confirmation email showing which reminders are enabled/disabled,
-    which modules are selected, bus configuration, and optional events setting.
+    which modules are selected, and bus configuration.
     """
     mail_address  = os.getenv("MAIL_ADDRESS")
     mail_password = os.getenv("MAIL_PASSWORD")
@@ -820,9 +839,6 @@ def send_preferences_confirmation(to_email, username, preferences, bus_config=No
         "Assessment": "Year 1 Examinations and Assessments Hub"
     }
     
-    # ── Include Optional Events status ──
-    include_optional = preferences.get("include_optional", True)
-    optional_status = "✅ ENABLED (you'll receive reminders for optional sessions)" if include_optional else "❌ DISABLED (only required sessions)"
     
     # ── Build module list string ──
     module_list_str = ""
@@ -881,16 +897,6 @@ def send_preferences_confirmation(to_email, username, preferences, bus_config=No
             </td>
         </tr>"""
     
-    # Optional Events row
-    optional_row = f"""
-    <tr style="border-bottom:1px solid #e9ecef;">
-        <td style="padding:10px 12px;font-size:13px;font-weight:500;">📋 Include Optional Events</td>
-        <td style="padding:10px 12px;font-size:12px;color:#666;">Send reminders for optional attendance sessions</td>
-        <td style="padding:10px 12px;text-align:right;">
-            <span style="font-size:12px;font-weight:600;color:{'#4caf7d' if include_optional else '#e05c5c'};">{'✅ ENABLED' if include_optional else '❌ DISABLED'}</span>
-        </td>
-    </tr>"""
-    
     # Bus row
     bus_row = f"""
     <tr style="border-bottom:1px solid #e9ecef;">
@@ -915,7 +921,6 @@ def send_preferences_confirmation(to_email, username, preferences, bus_config=No
         
         <table style="width:100%;border-collapse:collapse;border:1px solid #e9ecef;border-radius:8px;overflow:hidden;margin-bottom:16px;">
             {pref_rows}
-            {optional_row}
             {bus_row}
         </table>
         
@@ -927,6 +932,7 @@ def send_preferences_confirmation(to_email, username, preferences, bus_config=No
         </div>
         
         <p style="margin:16px 0 0;font-size:12px;color:#888;">You can update your preferences anytime by clicking the ⚙️ Settings button in the Learning Assistant.</p>
+        <p style="margin:12px 0 0;font-size:12px;color:#888;">Want to stop receiving these alerts? <a href="{APP_URL}" style="color:{PURPLE};text-decoration:underline;">Turn off reminders in the web app</a>.</p>
     </div>
     <div style="background:#2d1b4e;padding:12px 24px;">
         <p style="margin:0;font-size:11px;color:rgba(255,255,255,0.5);text-align:center;">NTU Lee Kong Chian School of Medicine · Learning Assistant</p>
@@ -946,8 +952,6 @@ Your reminder preferences have been saved.
         text_body += f"{status}  {name} - {desc}\n"
     
     text_body += f"""
-📋 OPTIONAL EVENTS: {optional_status}
-
 ─ BUS REMINDER ────────────────────
 {bus_status} - {bus_desc}
 
@@ -960,8 +964,11 @@ Your reminder preferences have been saved.
     else:
         text_body += "  • All modules selected\n"
     
-    text_body += """
-You can update your preferences anytime in the Learning Assistant settings."""
+    text_body += f"""
+You can update your preferences anytime in the Learning Assistant settings.
+
+Want to stop receiving these alerts? Turn off reminders in the web app:
+{APP_URL}"""
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Reminder Preferences Saved - LKCMedicine Learning Assistant"
@@ -1003,7 +1010,7 @@ def send_bus_reminder_email(to_email, username, bus_time, remind_before, directi
 Please head to the pickup point now.
 Arrive 5 minutes before departure.
 
-This is an automated reminder from your NTU Learning Assistant."""
+This is an automated reminder from your NTU Learning Assistant.{_unsubscribe_text()}"""
     
     html_body = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/></head>
@@ -1028,6 +1035,7 @@ This is an automated reminder from your NTU Learning Assistant."""
             <p style="margin:0;font-size:13px;color:#E65100;">⚠️ Please arrive 5 minutes before departure. Head to the pickup point now!</p>
         </div>
         <p style="margin:24px 0 0;font-size:13px;color:#868e96;line-height:1.6;">This reminder was sent automatically.<br>Configure your bus preferences in the Learning Assistant ⚙️ Settings.</p>
+        {_unsubscribe_html(PURPLE)}
     </div>
     <div style="background:{DARK_FOOTER};padding:14px 32px;">
         <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.5);text-align:center;">NTU Lee Kong Chian School of Medicine · Shuttle Bus Reminder</p>
@@ -1067,13 +1075,13 @@ def send_loa_rejection_email(to_email, username, reference, from_date, reason):
 Your recent absence application has been REJECTED:
  
 Reference: #{reference}
-Date: {from_date}
+Date(s): {from_date}
 Reason submitted: {reason}
  
 Please log in to Elentra to review the rejection reason and resubmit if needed:
 https://ntu.elentra.cloud/profile/absences#/dashboard
  
-This is an automated notification from your NTU Learning Assistant."""
+This is an automated notification from your NTU Learning Assistant.{_unsubscribe_text()}"""
    
     html_body = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/></head>
@@ -1105,6 +1113,7 @@ This is an automated notification from your NTU Learning Assistant."""
         </div>
         <a href="https://ntu.elentra.cloud/profile/absences#/dashboard" style="display:inline-block;padding:10px 20px;background:{PURPLE};color:#fff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:500;">View in Elentra →</a>
         <p style="margin:24px 0 0;font-size:13px;color:#868e96;line-height:1.6;">This notification was sent automatically.<br>You can manage LOA rejection alerts in the Learning Assistant ⚙️ Settings.</p>
+        {_unsubscribe_html(PURPLE)}
     </div>
     <div style="background:{DARK_FOOTER};padding:14px 32px;">
         <p style="margin:0;font-size:12px;color:rgba(255,255,255,0.5);text-align:center;">NTU Lee Kong Chian School of Medicine · Absence Application Alert</p>
