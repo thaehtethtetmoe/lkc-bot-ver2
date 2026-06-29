@@ -1067,7 +1067,7 @@ def send_loa_rejection_email(to_email, username, reference, from_date, reason):
 Your recent absence application has been REJECTED:
  
 Reference: #{reference}
-Date: {from_date}
+Date(s): {from_date}
 Reason submitted: {reason}
  
 Please log in to Elentra to review the rejection reason and resubmit if needed:
@@ -1092,7 +1092,7 @@ This is an automated notification from your NTU Learning Assistant."""
                 <td style="padding:10px 16px;font-size:13px;font-weight:600;color:#1a1a2e;">#{reference}</td>
             </tr>
             <tr style="background:#fff;border-bottom:1px solid #e9ecef;">
-                <td style="padding:10px 16px;font-size:13px;color:#868e96;">Date</td>
+                <td style="padding:10px 16px;font-size:13px;color:#868e96;">Date(s)</td>
                 <td style="padding:10px 16px;font-size:13px;color:#1a1a2e;">{from_date}</td>
             </tr>
             <tr style="background:#f9fafb;">
