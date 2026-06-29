@@ -63,7 +63,19 @@ attendance_marked_cache = {}
 _absence_policy_cache = None
 _absence_policy_cached_at = None
 
-from elentra_client import elentra_login, fetch_events, format_events, fetch_absences
+from elentra_client import (
+    elentra_login, fetch_events, format_events, format_events_text,
+    event_start_datetime, filter_events_between,
+    fetch_absences, format_absences, fetch_absence_policy,
+    check_if_attendance_marked, _text_says_attendance_marked,
+    check_attendance_type,
+    get_upcoming_attendance_events, get_events_ending_soon,
+    get_recent_unmarked_attendance, get_events_requiring_attendance,
+    get_past_events_without_attendance,
+    get_upcoming_buses, get_next_bus, get_all_buses_today,
+    format_bus_schedule_for_prompt,
+)
+
 
 # # ── Elentra login ────────────────────────────────────
 # def elentra_login(username, password):
@@ -298,581 +310,581 @@ from elentra_client import elentra_login, fetch_events, format_events, fetch_abs
 #         return None, None
 
 
-def format_absences(requests_data, totals_data):
-    quotas = []
-    for pool in totals_data:
-        if not isinstance(pool, dict):
-            continue
-        pending   = next((t["total"] for t in pool.get("totals", []) if isinstance(t, dict) and t.get("title") == "Pending"),  0)
-        approved  = next((t["total"] for t in pool.get("totals", []) if isinstance(t, dict) and t.get("title") == "Approved"), 0)
-        rejected  = next((t["total"] for t in pool.get("totals", []) if isinstance(t, dict) and t.get("title") == "Rejected"), 0)
-        quotas.append({
-            "academic_year": pool.get("title", "Unknown"),
-            "total_allowed": pool.get("amount", 0),
-            "approved":      approved,
-            "pending":       pending,
-            "rejected":      rejected,
-            "remaining":     pool.get("amount", 0) - approved
-        })
+# def format_absences(requests_data, totals_data):
+#     quotas = []
+#     for pool in totals_data:
+#         if not isinstance(pool, dict):
+#             continue
+#         pending   = next((t["total"] for t in pool.get("totals", []) if isinstance(t, dict) and t.get("title") == "Pending"),  0)
+#         approved  = next((t["total"] for t in pool.get("totals", []) if isinstance(t, dict) and t.get("title") == "Approved"), 0)
+#         rejected  = next((t["total"] for t in pool.get("totals", []) if isinstance(t, dict) and t.get("title") == "Rejected"), 0)
+#         quotas.append({
+#             "academic_year": pool.get("title", "Unknown"),
+#             "total_allowed": pool.get("amount", 0),
+#             "approved":      approved,
+#             "pending":       pending,
+#             "rejected":      rejected,
+#             "remaining":     pool.get("amount", 0) - approved
+#         })
 
-    absence_list = []
-    for r in requests_data:
-        if not isinstance(r, dict):
-            continue
-        from_dt = datetime.fromtimestamp(r["from"]).strftime("%d %b %Y") if r.get("from") else "N/A"
-        to_dt   = datetime.fromtimestamp(r["to"]).strftime("%d %b %Y")   if r.get("to")   else "N/A"
-        covered = []
-        for req in r.get("requests", []):
-            ev = req.get("event", {})
-            if ev and ev.get("event_start"):
-                covered.append(
-                    datetime.fromtimestamp(ev["event_start"]).strftime("%d %b %Y") +
-                    f" — {ev.get('event_title','')}"
-                )
-        absence_list.append({
-            "reference":      r.get("reference_code", "N/A"),
-            "reason":         r.get("reason", {}).get("title", "Unknown reason"),
-            "status":         r.get("status", {}).get("title", "Unknown"),
-            "from":           from_dt,
-            "to":             to_dt,
-            "events_covered": covered,
-            "has_files":      len(r.get("files", [])) > 0,
-            "messages":       len(r.get("messages", []))
-        })
+#     absence_list = []
+#     for r in requests_data:
+#         if not isinstance(r, dict):
+#             continue
+#         from_dt = datetime.fromtimestamp(r["from"]).strftime("%d %b %Y") if r.get("from") else "N/A"
+#         to_dt   = datetime.fromtimestamp(r["to"]).strftime("%d %b %Y")   if r.get("to")   else "N/A"
+#         covered = []
+#         for req in r.get("requests", []):
+#             ev = req.get("event", {})
+#             if ev and ev.get("event_start"):
+#                 covered.append(
+#                     datetime.fromtimestamp(ev["event_start"]).strftime("%d %b %Y") +
+#                     f" — {ev.get('event_title','')}"
+#                 )
+#         absence_list.append({
+#             "reference":      r.get("reference_code", "N/A"),
+#             "reason":         r.get("reason", {}).get("title", "Unknown reason"),
+#             "status":         r.get("status", {}).get("title", "Unknown"),
+#             "from":           from_dt,
+#             "to":             to_dt,
+#             "events_covered": covered,
+#             "has_files":      len(r.get("files", [])) > 0,
+#             "messages":       len(r.get("messages", []))
+#         })
 
-    return quotas, absence_list
+#     return quotas, absence_list
 
-# ── Bus schedule helpers ─────────────────────────────
+# # ── Bus schedule helpers ─────────────────────────────
 
-# Permanent NTU LKCMedicine Inter-campus Shuttle Bus Schedule
-BUS_SCHEDULE = {
-    "operating_days": "Monday to Friday (except Public Holidays)",
-    "departure_times": ["8:15", "9:15", "11:15", "14:15", "16:15", "17:30"],
-    "locations": {
-        "ntu_yunnan": {
-            "name": "NTU Yunnan Campus",
-            "pickup_point": "Experimental Medicine Building",
-            "additional_stops": [
-                "NIE / Lee Wee Nam Library bus stop",
-                "ADM bus stop", 
-                "Hall 11 bus stop"
-            ]
-        },
-        "ntu_novena": {
-            "name": "NTU Novena Campus",
-            "pickup_point": "Toh Kian Chui Annex"
-        }
-    },
-    "notes": [
-        "Please arrive 5 minutes before the scheduled time",
-        "No eating, drinking, or littering in the bus",
-        "Non-hazardous research items can be transported (seek driver assistance)",
-        "Staff should not claim travel expense reimbursement between campuses"
-    ],
-    "contact": "shuttlebus@ntu.edu.sg"
-}
+# # Permanent NTU LKCMedicine Inter-campus Shuttle Bus Schedule
+# BUS_SCHEDULE = {
+#     "operating_days": "Monday to Friday (except Public Holidays)",
+#     "departure_times": ["8:15", "9:15", "11:15", "14:15", "16:15", "17:30"],
+#     "locations": {
+#         "ntu_yunnan": {
+#             "name": "NTU Yunnan Campus",
+#             "pickup_point": "Experimental Medicine Building",
+#             "additional_stops": [
+#                 "NIE / Lee Wee Nam Library bus stop",
+#                 "ADM bus stop", 
+#                 "Hall 11 bus stop"
+#             ]
+#         },
+#         "ntu_novena": {
+#             "name": "NTU Novena Campus",
+#             "pickup_point": "Toh Kian Chui Annex"
+#         }
+#     },
+#     "notes": [
+#         "Please arrive 5 minutes before the scheduled time",
+#         "No eating, drinking, or littering in the bus",
+#         "Non-hazardous research items can be transported (seek driver assistance)",
+#         "Staff should not claim travel expense reimbursement between campuses"
+#     ],
+#     "contact": "shuttlebus@ntu.edu.sg"
+# }
 
 
-def get_upcoming_buses(direction=None):
-    """Get upcoming buses for today based on current time."""
-    now = datetime.now()
-    today_name = now.strftime("%A")
-    today_weekday = now.weekday()
+# def get_upcoming_buses(direction=None):
+#     """Get upcoming buses for today based on current time."""
+#     now = datetime.now()
+#     today_name = now.strftime("%A")
+#     today_weekday = now.weekday()
     
-    # No buses on weekends
-    if today_weekday >= 5:
-        return []
+#     # No buses on weekends
+#     if today_weekday >= 5:
+#         return []
     
-    upcoming = []
-    for time_str in BUS_SCHEDULE["departure_times"]:
-        hour, minute = map(int, time_str.split(":"))
-        departure_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+#     upcoming = []
+#     for time_str in BUS_SCHEDULE["departure_times"]:
+#         hour, minute = map(int, time_str.split(":"))
+#         departure_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         
-        # Only show future departures
-        if departure_time > now:
-            bus_info = {
-                "time": time_str,
-                "day": today_name,
-                "departure_datetime": departure_time.isoformat(),
-                "minutes_until": int((departure_time - now).total_seconds() / 60)
-            }
+#         # Only show future departures
+#         if departure_time > now:
+#             bus_info = {
+#                 "time": time_str,
+#                 "day": today_name,
+#                 "departure_datetime": departure_time.isoformat(),
+#                 "minutes_until": int((departure_time - now).total_seconds() / 60)
+#             }
             
-            # Add direction-specific info
-            if direction == "to_novena" or direction is None:
-                upcoming.append({
-                    **bus_info,
-                    "from": f"{BUS_SCHEDULE['locations']['ntu_yunnan']['name']} ({BUS_SCHEDULE['locations']['ntu_yunnan']['pickup_point']})",
-                    "to": f"{BUS_SCHEDULE['locations']['ntu_novena']['name']} ({BUS_SCHEDULE['locations']['ntu_novena']['pickup_point']})",
-                    "direction": "to_novena"
-                })
+#             # Add direction-specific info
+#             if direction == "to_novena" or direction is None:
+#                 upcoming.append({
+#                     **bus_info,
+#                     "from": f"{BUS_SCHEDULE['locations']['ntu_yunnan']['name']} ({BUS_SCHEDULE['locations']['ntu_yunnan']['pickup_point']})",
+#                     "to": f"{BUS_SCHEDULE['locations']['ntu_novena']['name']} ({BUS_SCHEDULE['locations']['ntu_novena']['pickup_point']})",
+#                     "direction": "to_novena"
+#                 })
             
-            if direction == "to_ntu" or direction is None:
-                upcoming.append({
-                    **bus_info,
-                    "from": f"{BUS_SCHEDULE['locations']['ntu_novena']['name']} ({BUS_SCHEDULE['locations']['ntu_novena']['pickup_point']})",
-                    "to": f"{BUS_SCHEDULE['locations']['ntu_yunnan']['name']} ({BUS_SCHEDULE['locations']['ntu_yunnan']['pickup_point']})",
-                    "direction": "to_ntu"
-                })
+#             if direction == "to_ntu" or direction is None:
+#                 upcoming.append({
+#                     **bus_info,
+#                     "from": f"{BUS_SCHEDULE['locations']['ntu_novena']['name']} ({BUS_SCHEDULE['locations']['ntu_novena']['pickup_point']})",
+#                     "to": f"{BUS_SCHEDULE['locations']['ntu_yunnan']['name']} ({BUS_SCHEDULE['locations']['ntu_yunnan']['pickup_point']})",
+#                     "direction": "to_ntu"
+#                 })
     
-    # Sort by departure time
-    upcoming.sort(key=lambda x: x["minutes_until"])
-    return upcoming
+#     # Sort by departure time
+#     upcoming.sort(key=lambda x: x["minutes_until"])
+#     return upcoming
 
 
-def get_next_bus(direction=None):
-    """Get the next upcoming bus."""
-    upcoming = get_upcoming_buses(direction)
-    return upcoming[0] if upcoming else None
+# def get_next_bus(direction=None):
+#     """Get the next upcoming bus."""
+#     upcoming = get_upcoming_buses(direction)
+#     return upcoming[0] if upcoming else None
 
 
-def get_all_buses_today():
-    """Get all buses for today (both past and upcoming)."""
-    now = datetime.now()
-    today_name = now.strftime("%A")
-    today_weekday = now.weekday()
+# def get_all_buses_today():
+#     """Get all buses for today (both past and upcoming)."""
+#     now = datetime.now()
+#     today_name = now.strftime("%A")
+#     today_weekday = now.weekday()
     
-    if today_weekday >= 5:
-        return []
+#     if today_weekday >= 5:
+#         return []
     
-    all_buses = []
-    for time_str in BUS_SCHEDULE["departure_times"]:
-        # Bus from NTU to Novena
-        all_buses.append({
-            "time": time_str,
-            "day": today_name,
-            "from": f"NTU Yunnan (Experimental Medicine Building)",
-            "to": "NTU Novena (Toh Kian Chui Annex)",
-            "direction": "to_novena"
-        })
+#     all_buses = []
+#     for time_str in BUS_SCHEDULE["departure_times"]:
+#         # Bus from NTU to Novena
+#         all_buses.append({
+#             "time": time_str,
+#             "day": today_name,
+#             "from": f"NTU Yunnan (Experimental Medicine Building)",
+#             "to": "NTU Novena (Toh Kian Chui Annex)",
+#             "direction": "to_novena"
+#         })
         
-        # Bus from Novena to NTU
-        all_buses.append({
-            "time": time_str,
-            "day": today_name,
-            "from": "NTU Novena (Toh Kian Chui Annex)",
-            "to": "NTU Yunnan (Experimental Medicine Building)",
-            "direction": "to_ntu"
-        })
+#         # Bus from Novena to NTU
+#         all_buses.append({
+#             "time": time_str,
+#             "day": today_name,
+#             "from": "NTU Novena (Toh Kian Chui Annex)",
+#             "to": "NTU Yunnan (Experimental Medicine Building)",
+#             "direction": "to_ntu"
+#         })
     
-    # Sort by time
-    all_buses.sort(key=lambda x: int(x["time"].split(":")[0]) * 60 + int(x["time"].split(":")[1]))
+#     # Sort by time
+#     all_buses.sort(key=lambda x: int(x["time"].split(":")[0]) * 60 + int(x["time"].split(":")[1]))
     
-    return all_buses
+#     return all_buses
 
-def format_bus_schedule_for_prompt():
-    """Format bus schedule for inclusion in the system prompt."""
-    today_name = datetime.now().strftime("%A")
-    today_weekday = datetime.now().weekday()
+# def format_bus_schedule_for_prompt():
+#     """Format bus schedule for inclusion in the system prompt."""
+#     today_name = datetime.now().strftime("%A")
+#     today_weekday = datetime.now().weekday()
     
-    schedule_text = "── INTER-CAMPUS SHUTTLE BUS SCHEDULE ──\n"
-    schedule_text += "Service: Monday to Friday (except Public Holidays)\n\n"
-    schedule_text += "Departure times from BOTH campuses:\n"
-    schedule_text += f"  {', '.join(BUS_SCHEDULE['departure_times'])}\n\n"
-    schedule_text += "Locations:\n"
-    schedule_text += f"  NTU Yunnan: Experimental Medicine Building\n"
-    schedule_text += f"    (Also stops at: NIE/Library, ADM, Hall 11)\n"
-    schedule_text += f"  NTU Novena: Toh Kian Chui Annex\n\n"
+#     schedule_text = "── INTER-CAMPUS SHUTTLE BUS SCHEDULE ──\n"
+#     schedule_text += "Service: Monday to Friday (except Public Holidays)\n\n"
+#     schedule_text += "Departure times from BOTH campuses:\n"
+#     schedule_text += f"  {', '.join(BUS_SCHEDULE['departure_times'])}\n\n"
+#     schedule_text += "Locations:\n"
+#     schedule_text += f"  NTU Yunnan: Experimental Medicine Building\n"
+#     schedule_text += f"    (Also stops at: NIE/Library, ADM, Hall 11)\n"
+#     schedule_text += f"  NTU Novena: Toh Kian Chui Annex\n\n"
     
-    if today_weekday >= 5:
-        schedule_text += "⚠️ No bus service today (weekend/public holiday)\n"
-    else:
-        now = datetime.now()
-        current_time = now.strftime("%H:%M")
-        schedule_text += f"Current time: {current_time}\n\n"
-        schedule_text += f"All buses today ({today_name}):\n"
-        all_buses = get_all_buses_today()
-        for bus in all_buses:
-            direction_icon = "🟢" if bus["direction"] == "to_novena" else "🔵"
-            bus_h, bus_m = map(int, bus["time"].split(":"))
-            bus_dt = now.replace(hour=bus_h, minute=bus_m, second=0, microsecond=0)
-            if bus_dt > now:
-                mins = int((bus_dt - now).total_seconds() / 60)
-                schedule_text += f"  {direction_icon} {bus['time']} (in {mins} min) - {bus['from']} → {bus['to']}\n"
-            else:
-                schedule_text += f"  {direction_icon} {bus['time']} (passed) - {bus['from']} → {bus['to']}\n"
+#     if today_weekday >= 5:
+#         schedule_text += "⚠️ No bus service today (weekend/public holiday)\n"
+#     else:
+#         now = datetime.now()
+#         current_time = now.strftime("%H:%M")
+#         schedule_text += f"Current time: {current_time}\n\n"
+#         schedule_text += f"All buses today ({today_name}):\n"
+#         all_buses = get_all_buses_today()
+#         for bus in all_buses:
+#             direction_icon = "🟢" if bus["direction"] == "to_novena" else "🔵"
+#             bus_h, bus_m = map(int, bus["time"].split(":"))
+#             bus_dt = now.replace(hour=bus_h, minute=bus_m, second=0, microsecond=0)
+#             if bus_dt > now:
+#                 mins = int((bus_dt - now).total_seconds() / 60)
+#                 schedule_text += f"  {direction_icon} {bus['time']} (in {mins} min) - {bus['from']} → {bus['to']}\n"
+#             else:
+#                 schedule_text += f"  {direction_icon} {bus['time']} (passed) - {bus['from']} → {bus['to']}\n"
     
-    schedule_text += "\nPlease arrive 5 minutes before departure\n"
-    return schedule_text
+#     schedule_text += "\nPlease arrive 5 minutes before departure\n"
+#     return schedule_text
 
 # ── Attendance Functions ────────────────────────────
-def _text_says_attendance_marked(html_text):
-    """
-    Robustly detect whether a page says attendance was marked, regardless of
-    exact HTML formatting (tags, whitespace, line breaks, casing).
+# def _text_says_attendance_marked(html_text):
+#     """
+#     Robustly detect whether a page says attendance was marked, regardless of
+#     exact HTML formatting (tags, whitespace, line breaks, casing).
 
-    The old code matched literal strings like "Attendance Taken: Yes" or
-    "Attendance Taken:" + "<strong>Yes</strong>". If Elentra rendered the
-    value with different markup or spacing (e.g. a <span> instead of
-    <strong>, a line break, or different casing), none of those literal
-    matches would fire — and the old code then short-circuited straight to
-    "NOT MARKED" the instant it saw the label "Attendance Taken:" anywhere
-    on the page, without even checking what the value actually was. That's
-    almost certainly why already-marked attendance was still triggering
-    reminders.
+#     The old code matched literal strings like "Attendance Taken: Yes" or
+#     "Attendance Taken:" + "<strong>Yes</strong>". If Elentra rendered the
+#     value with different markup or spacing (e.g. a <span> instead of
+#     <strong>, a line break, or different casing), none of those literal
+#     matches would fire — and the old code then short-circuited straight to
+#     "NOT MARKED" the instant it saw the label "Attendance Taken:" anywhere
+#     on the page, without even checking what the value actually was. That's
+#     almost certainly why already-marked attendance was still triggering
+#     reminders.
 
-    This strips all HTML tags, collapses whitespace, and uses a
-    case-insensitive regex to look at the actual value following the label.
-    """
-    if not html_text:
-        return None  # unknown / couldn't determine
+#     This strips all HTML tags, collapses whitespace, and uses a
+#     case-insensitive regex to look at the actual value following the label.
+#     """
+#     if not html_text:
+#         return None  # unknown / couldn't determine
 
-    plain = re.sub(r'<[^>]+>', ' ', html_text)
-    plain = re.sub(r'\s+', ' ', plain).strip()
+#     plain = re.sub(r'<[^>]+>', ' ', html_text)
+#     plain = re.sub(r'\s+', ' ', plain).strip()
 
-    match = re.search(
-        r'attendance\s*taken\s*:?\s*(attendance\s*marked|yes|present|marked|no|not\s*marked)',
-        plain,
-        re.IGNORECASE
-    )
-    if not match:
-        return None  # label not found at all — can't determine from this page
+#     match = re.search(
+#         r'attendance\s*taken\s*:?\s*(attendance\s*marked|yes|present|marked|no|not\s*marked)',
+#         plain,
+#         re.IGNORECASE
+#     )
+#     if not match:
+#         return None  # label not found at all — can't determine from this page
 
-    value = match.group(1).lower()
-    if value in ("no", "not marked"):
-        return False
-    return True  # "yes", "attendance marked", "present", "marked"
+#     value = match.group(1).lower()
+#     if value in ("no", "not marked"):
+#         return False
+#     return True  # "yes", "attendance marked", "present", "marked"
 
 
-def check_if_attendance_marked(session, event_id, force_refresh=False, username=None):
-    """Check if attendance is marked"""
+# def check_if_attendance_marked(session, event_id, force_refresh=False, username=None):
+#     """Check if attendance is marked"""
     
-    # Check cache first (unless force_refresh is True)
-    if not force_refresh and event_id in attendance_marked_cache:
-        print(f"[CACHE HIT] Event {event_id} = {attendance_marked_cache[event_id]}")
-        return attendance_marked_cache[event_id]
+#     # Check cache first (unless force_refresh is True)
+#     if not force_refresh and event_id in attendance_marked_cache:
+#         print(f"[CACHE HIT] Event {event_id} = {attendance_marked_cache[event_id]}")
+#         return attendance_marked_cache[event_id]
     
-    print(f"[CACHE {'FORCED REFRESH' if force_refresh else 'MISS'}] Event {event_id} - checking API")
+#     print(f"[CACHE {'FORCED REFRESH' if force_refresh else 'MISS'}] Event {event_id} - checking API")
 
-    # On force_refresh (MC / ending-soon), hit the event details API FIRST —
-    # it reflects attendance sooner than the calendar list API.
-    if force_refresh:
-        try:
-            detail_url = f"{BASE_URL}/api/events.api.php?id={event_id}"
-            print(f"[ATTENDANCE] force_refresh: checking event details API: {detail_url}")
-            detail_resp = session.get(detail_url, timeout=10)
-            text = detail_resp.text
-            result = _text_says_attendance_marked(text)
-            if result is True:
-                attendance_marked_cache[event_id] = True
-                print(f"[ATTENDANCE] Event {event_id} - event details API says MARKED")
-                return True
-            elif result is False:
-                attendance_marked_cache.pop(event_id, None)
-                print(f"[ATTENDANCE] Event {event_id} - event details API says NOT MARKED")
-                return False
-            # result is None: label wasn't found/recognized on this page at
-            # all — don't trust that as "not marked", fall through instead
-            # of returning False prematurely.
-            print(f"[ATTENDANCE] Event {event_id} - event details API: couldn't determine status, falling through")
-        except Exception as detail_ex:
-            print(f"[ATTENDANCE] Event details API failed: {detail_ex}, falling back to calendar API")
+#     # On force_refresh (MC / ending-soon), hit the event details API FIRST —
+#     # it reflects attendance sooner than the calendar list API.
+#     if force_refresh:
+#         try:
+#             detail_url = f"{BASE_URL}/api/events.api.php?id={event_id}"
+#             print(f"[ATTENDANCE] force_refresh: checking event details API: {detail_url}")
+#             detail_resp = session.get(detail_url, timeout=10)
+#             text = detail_resp.text
+#             result = _text_says_attendance_marked(text)
+#             if result is True:
+#                 attendance_marked_cache[event_id] = True
+#                 print(f"[ATTENDANCE] Event {event_id} - event details API says MARKED")
+#                 return True
+#             elif result is False:
+#                 attendance_marked_cache.pop(event_id, None)
+#                 print(f"[ATTENDANCE] Event {event_id} - event details API says NOT MARKED")
+#                 return False
+#             # result is None: label wasn't found/recognized on this page at
+#             # all — don't trust that as "not marked", fall through instead
+#             # of returning False prematurely.
+#             print(f"[ATTENDANCE] Event {event_id} - event details API: couldn't determine status, falling through")
+#         except Exception as detail_ex:
+#             print(f"[ATTENDANCE] Event details API failed: {detail_ex}, falling back to calendar API")
 
-    try:
-        api_url = f"{BASE_URL}/api/events-calendar.api.php"
-        params = {
-            "dtype": "week", "dstamp": int(time.time()),
-            "local_timezone": "Asia/Singapore", "viewtype": "list",
-            "parentonly": "no", "pv": "1"
-        }
-        api_resp = session.get(api_url, params=params)
-        data = api_resp.json()
+#     try:
+#         api_url = f"{BASE_URL}/api/events-calendar.api.php"
+#         params = {
+#             "dtype": "week", "dstamp": int(time.time()),
+#             "local_timezone": "Asia/Singapore", "viewtype": "list",
+#             "parentonly": "no", "pv": "1"
+#         }
+#         api_resp = session.get(api_url, params=params)
+#         data = api_resp.json()
 
-        for event in data.get("events", []):
-            if str(event.get("event_id")) == str(event_id):
-                if event.get("attendance_taken") in [1, "1", True, "true"]:
-                    attendance_marked_cache[event_id] = True
-                    print(f"[ATTENDANCE] Event {event_id} - attendance_taken = True -> MARKED")
-                    return True
-                if event.get("attendance_taken_date"):
-                    attendance_marked_cache[event_id] = True
-                    print(f"[ATTENDANCE] Event {event_id} - has attendance_taken_date -> MARKED")
-                    return True
-                attendance_status = event.get("attendance_status")
-                if attendance_status == "present":
-                    attendance_marked_cache[event_id] = True
-                    print(f"[ATTENDANCE] Event {event_id} - attendance_status = present -> MARKED")
-                    return True
-                attendance_marked_cache.pop(event_id, None)
-                return False
+#         for event in data.get("events", []):
+#             if str(event.get("event_id")) == str(event_id):
+#                 if event.get("attendance_taken") in [1, "1", True, "true"]:
+#                     attendance_marked_cache[event_id] = True
+#                     print(f"[ATTENDANCE] Event {event_id} - attendance_taken = True -> MARKED")
+#                     return True
+#                 if event.get("attendance_taken_date"):
+#                     attendance_marked_cache[event_id] = True
+#                     print(f"[ATTENDANCE] Event {event_id} - has attendance_taken_date -> MARKED")
+#                     return True
+#                 attendance_status = event.get("attendance_status")
+#                 if attendance_status == "present":
+#                     attendance_marked_cache[event_id] = True
+#                     print(f"[ATTENDANCE] Event {event_id} - attendance_status = present -> MARKED")
+#                     return True
+#                 attendance_marked_cache.pop(event_id, None)
+#                 return False
 
-        # FALLBACK: Check the event details page directly
-        print(f"[ATTENDANCE] Event {event_id} - API shows not marked, checking event page...")
+#         # FALLBACK: Check the event details page directly
+#         print(f"[ATTENDANCE] Event {event_id} - API shows not marked, checking event page...")
         
-        possible_urls = [
-            f"{BASE_URL}/api/events.api.php?id={event_id}",  # confirmed working (no drid needed)
-            f"{BASE_URL}/events/view/{event_id}",
-            f"{BASE_URL}/events/detail/{event_id}",
-            f"{BASE_URL}/learningevents?event_id={event_id}",
-            f"{BASE_URL}/events/{event_id}",
-            f"{BASE_URL}/event/{event_id}",
-        ]
+#         possible_urls = [
+#             f"{BASE_URL}/api/events.api.php?id={event_id}",  # confirmed working (no drid needed)
+#             f"{BASE_URL}/events/view/{event_id}",
+#             f"{BASE_URL}/events/detail/{event_id}",
+#             f"{BASE_URL}/learningevents?event_id={event_id}",
+#             f"{BASE_URL}/events/{event_id}",
+#             f"{BASE_URL}/event/{event_id}",
+#         ]
         
-        found_marked = False
-        for test_url in possible_urls:
-            try:
-                print(f"[ATTENDANCE] Trying URL: {test_url}")
-                test_resp = session.get(test_url, timeout=10)
-                result = _text_says_attendance_marked(test_resp.text)
-                if result is True:
-                    attendance_marked_cache[event_id] = True
-                    found_marked = True
-                    print(f"[ATTENDANCE] ✅ Event {event_id} - marked (via {test_url})")
-                    return True
-                # result is False or None: keep trying other URLs rather
-                # than concluding "not marked" from a single page.
-            except Exception as url_ex:
-                print(f"[ATTENDANCE] URL {test_url} failed: {url_ex}")
-                continue
+#         found_marked = False
+#         for test_url in possible_urls:
+#             try:
+#                 print(f"[ATTENDANCE] Trying URL: {test_url}")
+#                 test_resp = session.get(test_url, timeout=10)
+#                 result = _text_says_attendance_marked(test_resp.text)
+#                 if result is True:
+#                     attendance_marked_cache[event_id] = True
+#                     found_marked = True
+#                     print(f"[ATTENDANCE] ✅ Event {event_id} - marked (via {test_url})")
+#                     return True
+#                 # result is False or None: keep trying other URLs rather
+#                 # than concluding "not marked" from a single page.
+#             except Exception as url_ex:
+#                 print(f"[ATTENDANCE] URL {test_url} failed: {url_ex}")
+#                 continue
         
-        if not found_marked and username:
-            try:
-                calendar_url = f"{BASE_URL}/calendars/{username}.json"
-                params_cal = {
-                    "start": int((datetime.now() - timedelta(days=7)).timestamp()),
-                    "end": int((datetime.now() + timedelta(days=7)).timestamp())
-                }
-                print(f"[ATTENDANCE] Trying calendar JSON: {calendar_url}")
-                cal_resp = session.get(calendar_url, params=params_cal, timeout=10)
-                if cal_resp.status_code == 200:
-                    cal_data = cal_resp.json()
-                    for event in cal_data:
-                        if str(event.get('event_id')) == str(event_id):
-                            if event.get('attendance_taken') or event.get('attendance_status') == 'present':
-                                attendance_marked_cache[event_id] = True
-                                print(f"[ATTENDANCE] Event {event_id} - Calendar JSON shows marked -> MARKED")
-                                return True
-                            else:
-                                print(f"[ATTENDANCE] Event {event_id} - Calendar JSON shows not marked")
-                            break
-            except Exception as cal_ex:
-                print(f"[ATTENDANCE] Calendar JSON check failed: {cal_ex}")
+#         if not found_marked and username:
+#             try:
+#                 calendar_url = f"{BASE_URL}/calendars/{username}.json"
+#                 params_cal = {
+#                     "start": int((datetime.now() - timedelta(days=7)).timestamp()),
+#                     "end": int((datetime.now() + timedelta(days=7)).timestamp())
+#                 }
+#                 print(f"[ATTENDANCE] Trying calendar JSON: {calendar_url}")
+#                 cal_resp = session.get(calendar_url, params=params_cal, timeout=10)
+#                 if cal_resp.status_code == 200:
+#                     cal_data = cal_resp.json()
+#                     for event in cal_data:
+#                         if str(event.get('event_id')) == str(event_id):
+#                             if event.get('attendance_taken') or event.get('attendance_status') == 'present':
+#                                 attendance_marked_cache[event_id] = True
+#                                 print(f"[ATTENDANCE] Event {event_id} - Calendar JSON shows marked -> MARKED")
+#                                 return True
+#                             else:
+#                                 print(f"[ATTENDANCE] Event {event_id} - Calendar JSON shows not marked")
+#                             break
+#             except Exception as cal_ex:
+#                 print(f"[ATTENDANCE] Calendar JSON check failed: {cal_ex}")
         
-        attendance_marked_cache.pop(event_id, None)
-        print(f"[ATTENDANCE] Event {event_id} - No attendance markers found -> NOT MARKED")
-        return False
+#         attendance_marked_cache.pop(event_id, None)
+#         print(f"[ATTENDANCE] Event {event_id} - No attendance markers found -> NOT MARKED")
+#         return False
         
-    except Exception as e:
-        print(f"❌ Error checking attendance: {e}")
-        return False
+#     except Exception as e:
+#         print(f"❌ Error checking attendance: {e}")
+#         return False
 
-def check_attendance_type(session, event_id):
-    """Determine attendance type from calendar API data"""
-    api_url = f"{BASE_URL}/api/events-calendar.api.php"
-    params = {
-        "dtype": "week", "dstamp": int(time.time()),
-        "local_timezone": "Asia/Singapore", "viewtype": "list",
-        "parentonly": "no", "pv": "1"
-    }
-    try:
-        resp = session.get(api_url, params=params)
-        data = resp.json()
-        for event in data.get("events", []):
-            if str(event.get("event_id")) == str(event_id):
-                if event.get("attendance_method") == "location":
-                    return "location"
-                elif event.get("attendance_required") in [1, "1", True, "true"]:
-                    return "self"
-                break
-    except:
-        pass
-    return "self"
+# def check_attendance_type(session, event_id):
+#     """Determine attendance type from calendar API data"""
+#     api_url = f"{BASE_URL}/api/events-calendar.api.php"
+#     params = {
+#         "dtype": "week", "dstamp": int(time.time()),
+#         "local_timezone": "Asia/Singapore", "viewtype": "list",
+#         "parentonly": "no", "pv": "1"
+#     }
+#     try:
+#         resp = session.get(api_url, params=params)
+#         data = resp.json()
+#         for event in data.get("events", []):
+#             if str(event.get("event_id")) == str(event_id):
+#                 if event.get("attendance_method") == "location":
+#                     return "location"
+#                 elif event.get("attendance_required") in [1, "1", True, "true"]:
+#                     return "self"
+#                 break
+#     except:
+#         pass
+#     return "self"
 
 
-def mark_self_attendance(session, event_id, jwt_token):
-    """Mark self-attendance for an event"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        endpoint = f"{BASE_URL}/api/v2/events/store-attendance-from-event"
-        payload = {"event_id": str(event_id)}
-        resp = session.post(endpoint, json=payload, headers=headers)
+# def mark_self_attendance(session, event_id, jwt_token):
+#     """Mark self-attendance for an event"""
+#     try:
+#         headers = {
+#             "Authorization": f"Bearer {jwt_token}",
+#             "Accept": "application/json",
+#             "Content-Type": "application/json"
+#         }
+#         endpoint = f"{BASE_URL}/api/v2/events/store-attendance-from-event"
+#         payload = {"event_id": str(event_id)}
+#         resp = session.post(endpoint, json=payload, headers=headers)
         
-        print(f"[MARK] Status: {resp.status_code}")
+#         print(f"[MARK] Status: {resp.status_code}")
         
-        if resp.status_code == 201:
-            attendance_marked_cache[event_id] = True
-            print(f"✅ Attendance marked for event {event_id} (cached)")
-            return True
-        elif resp.status_code == 200:
-            try:
-                data = resp.json()
-                if data.get("status") == "success" or data.get("success"):
-                    attendance_marked_cache[event_id] = True
-                    print(f"✅ Attendance marked for event {event_id} (cached)")
-                    return True
-            except:
-                pass
+#         if resp.status_code == 201:
+#             attendance_marked_cache[event_id] = True
+#             print(f"✅ Attendance marked for event {event_id} (cached)")
+#             return True
+#         elif resp.status_code == 200:
+#             try:
+#                 data = resp.json()
+#                 if data.get("status") == "success" or data.get("success"):
+#                     attendance_marked_cache[event_id] = True
+#                     print(f"✅ Attendance marked for event {event_id} (cached)")
+#                     return True
+#             except:
+#                 pass
         
-        print(f"❌ Failed. Status: {resp.status_code}")
-        return False
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return False
+#         print(f"❌ Failed. Status: {resp.status_code}")
+#         return False
+#     except Exception as e:
+#         print(f"❌ Error: {e}")
+#         return False
 
 
-def mark_location_attendance(session, event_id, latitude=1.3483, longitude=103.6831):
-    """Mark location-based attendance"""
-    try:
-        endpoint = f"{BASE_URL}/api/events-location-attendance.api.php"
-        payload = {"event_id": str(event_id), "user_lat": str(latitude), "user_lng": str(longitude)}
-        resp = session.post(endpoint, data=payload)
-        try:
-            result = resp.json()
-            if result.get("success"):
-                attendance_marked_cache[event_id] = True
-                return True
-        except:
-            pass
-        return False
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return False
+# def mark_location_attendance(session, event_id, latitude=1.3483, longitude=103.6831):
+#     """Mark location-based attendance"""
+#     try:
+#         endpoint = f"{BASE_URL}/api/events-location-attendance.api.php"
+#         payload = {"event_id": str(event_id), "user_lat": str(latitude), "user_lng": str(longitude)}
+#         resp = session.post(endpoint, data=payload)
+#         try:
+#             result = resp.json()
+#             if result.get("success"):
+#                 attendance_marked_cache[event_id] = True
+#                 return True
+#         except:
+#             pass
+#         return False
+#     except Exception as e:
+#         print(f"❌ Error: {e}")
+#         return False
 
 
-def mark_attendance(session, event_id, jwt_token=None):
-    """Smart attendance marking"""
-    attendance_type = check_attendance_type(session, event_id)
-    if not attendance_type:
-        return False
-    if attendance_type == "self":
-        if not jwt_token:
-            return False
-        return mark_self_attendance(session, event_id, jwt_token)
-    elif attendance_type == "location":
-        return mark_location_attendance(session, event_id)
-    return False
+# def mark_attendance(session, event_id, jwt_token=None):
+#     """Smart attendance marking"""
+#     attendance_type = check_attendance_type(session, event_id)
+#     if not attendance_type:
+#         return False
+#     if attendance_type == "self":
+#         if not jwt_token:
+#             return False
+#         return mark_self_attendance(session, event_id, jwt_token)
+#     elif attendance_type == "location":
+#         return mark_location_attendance(session, event_id)
+#     return False
 
 
-def get_upcoming_attendance_events(session, minutes_ahead=15):
-    """Get events starting in ~X minutes that require attendance"""
-    all_events = fetch_events(session, weeks=1)
-    formatted = format_events(all_events)
-    now = datetime.now()
-    target_start = now + timedelta(minutes=minutes_ahead)
-    target_end = target_start + timedelta(minutes=5)
+# def get_upcoming_attendance_events(session, minutes_ahead=15):
+#     """Get events starting in ~X minutes that require attendance"""
+#     all_events = fetch_events(session, weeks=1)
+#     formatted = format_events(all_events)
+#     now = datetime.now()
+#     target_start = now + timedelta(minutes=minutes_ahead)
+#     target_end = target_start + timedelta(minutes=5)
     
-    result = []
-    for event in formatted:
-        if event["attendance"] != "Required":
-            continue
-        try:
-            event_time = event_start_datetime(event)
-            if target_start <= event_time <= target_end:
-                already_marked = check_if_attendance_marked(session, event["id"])
-                if not already_marked:
-                    result.append(event)
-        except:
-            continue
-    return result
+#     result = []
+#     for event in formatted:
+#         if event["attendance"] != "Required":
+#             continue
+#         try:
+#             event_time = event_start_datetime(event)
+#             if target_start <= event_time <= target_end:
+#                 already_marked = check_if_attendance_marked(session, event["id"])
+#                 if not already_marked:
+#                     result.append(event)
+#         except:
+#             continue
+#     return result
 
-def get_events_ending_soon(session, minutes_before_end=15):
-    """Get events that will end in ~X minutes and still need attendance"""
-    all_events = fetch_events(session, weeks=1)
-    formatted = format_events(all_events)
-    now = datetime.now()
+# def get_events_ending_soon(session, minutes_before_end=15):
+#     """Get events that will end in ~X minutes and still need attendance"""
+#     all_events = fetch_events(session, weeks=1)
+#     formatted = format_events(all_events)
+#     now = datetime.now()
     
-    # Calculate the target end time window
-    target_end = now + timedelta(minutes=minutes_before_end)
-    window_start = target_end - timedelta(minutes=2)  # 2-min window
-    window_end = target_end + timedelta(minutes=2)
+#     # Calculate the target end time window
+#     target_end = now + timedelta(minutes=minutes_before_end)
+#     window_start = target_end - timedelta(minutes=2)  # 2-min window
+#     window_end = target_end + timedelta(minutes=2)
     
-    result = []
-    for event in formatted:
-        if event["attendance"] != "Required":
-            continue
-        try:
-            event_start = event_start_datetime(event)
-            event_end = event_start + timedelta(hours=event["duration_hours"])
+#     result = []
+#     for event in formatted:
+#         if event["attendance"] != "Required":
+#             continue
+#         try:
+#             event_start = event_start_datetime(event)
+#             event_end = event_start + timedelta(hours=event["duration_hours"])
             
-            # Check if the event ends within our window
-            if window_start <= event_end <= window_end:
-                # This one doesn't have a username readily available, you may need to pass it through
-                # For now, keep as is or pass None
-                already_marked = check_if_attendance_marked(session, event["id"], username=None)
-                if not already_marked:
-                    minutes_until_end = int((event_end - now).total_seconds() / 60)
-                    result.append({
-                        **event,
-                        "minutes_until_end": minutes_until_end,
-                        "event_end_time": event_end.strftime("%H:%M"),
-                        "reminder_type": "end_of_class"
-                    })
-        except:
-            continue
+#             # Check if the event ends within our window
+#             if window_start <= event_end <= window_end:
+#                 # This one doesn't have a username readily available, you may need to pass it through
+#                 # For now, keep as is or pass None
+#                 already_marked = check_if_attendance_marked(session, event["id"], username=None)
+#                 if not already_marked:
+#                     minutes_until_end = int((event_end - now).total_seconds() / 60)
+#                     result.append({
+#                         **event,
+#                         "minutes_until_end": minutes_until_end,
+#                         "event_end_time": event_end.strftime("%H:%M"),
+#                         "reminder_type": "end_of_class"
+#                     })
+#         except:
+#             continue
     
-    return result
+#     return result
 
-def get_recent_unmarked_attendance(session, hours_ago=4):
-    """Get events that started recently where student hasn't marked attendance"""
-    all_events = fetch_events(session, weeks=1)
-    formatted = format_events(all_events)
-    now = datetime.now()
-    cutoff = now - timedelta(hours=hours_ago)
+# def get_recent_unmarked_attendance(session, hours_ago=4):
+#     """Get events that started recently where student hasn't marked attendance"""
+#     all_events = fetch_events(session, weeks=1)
+#     formatted = format_events(all_events)
+#     now = datetime.now()
+#     cutoff = now - timedelta(hours=hours_ago)
     
-    result = []
-    for event in formatted:
-        if event["attendance"] != "Required":
-            continue
-        try:
-            event_time = event_start_datetime(event)
-            if cutoff <= event_time <= now:
-                already_marked = check_if_attendance_marked(session, event["id"])
-                if already_marked is False:
-                    minutes_ago = int((now - event_time).total_seconds() / 60)
-                    result.append({
-                        **event,
-                        "minutes_since_start": minutes_ago,
-                        "urgent": minutes_ago > 60
-                    })
-        except:
-            continue
+#     result = []
+#     for event in formatted:
+#         if event["attendance"] != "Required":
+#             continue
+#         try:
+#             event_time = event_start_datetime(event)
+#             if cutoff <= event_time <= now:
+#                 already_marked = check_if_attendance_marked(session, event["id"])
+#                 if already_marked is False:
+#                     minutes_ago = int((now - event_time).total_seconds() / 60)
+#                     result.append({
+#                         **event,
+#                         "minutes_since_start": minutes_ago,
+#                         "urgent": minutes_ago > 60
+#                     })
+#         except:
+#             continue
     
-    result.sort(key=lambda x: x["minutes_since_start"], reverse=True)
-    return result
+#     result.sort(key=lambda x: x["minutes_since_start"], reverse=True)
+#     return result
 
 
-def get_events_requiring_attendance(session, hours_ahead=1):
-    """Get upcoming events that require attendance within the next X hours"""
-    all_events = fetch_events(session, weeks=1)
-    formatted = format_events(all_events)
-    now = datetime.now()
-    cutoff = now + timedelta(hours=hours_ahead)
-    result = []
-    for event in formatted:
-        if event["attendance"] != "Required":
-            continue
-        try:
-            event_time = event_start_datetime(event)
-            if now <= event_time <= cutoff:
-                result.append(event)
-        except:
-            continue
-    return result
+# def get_events_requiring_attendance(session, hours_ahead=1):
+#     """Get upcoming events that require attendance within the next X hours"""
+#     all_events = fetch_events(session, weeks=1)
+#     formatted = format_events(all_events)
+#     now = datetime.now()
+#     cutoff = now + timedelta(hours=hours_ahead)
+#     result = []
+#     for event in formatted:
+#         if event["attendance"] != "Required":
+#             continue
+#         try:
+#             event_time = event_start_datetime(event)
+#             if now <= event_time <= cutoff:
+#                 result.append(event)
+#         except:
+#             continue
+#     return result
 
 
-def get_past_events_without_attendance(session, hours_ago=2):
-    """Get events that ended recently where attendance might need marking"""
-    all_events = fetch_events(session, weeks=1)
-    formatted = format_events(all_events)
-    now = datetime.now()
-    cutoff = now - timedelta(hours=hours_ago)
-    result = []
-    for event in formatted:
-        if event["attendance"] != "Required":
-            continue
-        try:
-            event_time = event_start_datetime(event)
-            event_end = event_time + timedelta(hours=event["duration_hours"])
-            if cutoff <= event_end <= now:
-                status = check_if_attendance_marked(session, event["id"])
-                if status is False:
-                    result.append({**event, "attendance_marked": False})
-        except:
-            continue
-    return result
+# def get_past_events_without_attendance(session, hours_ago=2):
+#     """Get events that ended recently where attendance might need marking"""
+#     all_events = fetch_events(session, weeks=1)
+#     formatted = format_events(all_events)
+#     now = datetime.now()
+#     cutoff = now - timedelta(hours=hours_ago)
+#     result = []
+#     for event in formatted:
+#         if event["attendance"] != "Required":
+#             continue
+#         try:
+#             event_time = event_start_datetime(event)
+#             event_end = event_time + timedelta(hours=event["duration_hours"])
+#             if cutoff <= event_end <= now:
+#                 status = check_if_attendance_marked(session, event["id"])
+#                 if status is False:
+#                     result.append({**event, "attendance_marked": False})
+#         except:
+#             continue
+#     return result
 
 
 # ── Absence Policy ───────────────
