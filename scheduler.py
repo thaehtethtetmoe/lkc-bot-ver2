@@ -334,7 +334,8 @@ def send_attendance_reminders():
                         event_dt = SGT.localize(event_dt) if event_dt.tzinfo is None else event_dt
                         if target_start <= event_dt <= target_end:
                             # CHECK IF ALREADY MARKED BEFORE ADDING
-                            from app import check_if_attendance_marked
+                            # from app import check_if_attendance_marked
+                            from elentra_client import check_if_attendance_marked
                             already_marked = check_if_attendance_marked(session, event["id"], username=username)
                             if already_marked:
                                 print(f"[ATTENDANCE] {username}: ⏭️ SKIP (already marked) {event['title']}")
@@ -394,7 +395,8 @@ def send_missing_attendance_mc_reminder(force=False):
     
     try:
         from mailer import send_mc_reminder_email
-        from app import check_if_attendance_marked
+        # from app import check_if_attendance_marked
+        from elentra_client import check_if_attendance_marked
         
         print(f"\n{'='*60}")
         print(f"[MC DEBUG] send_missing_attendance_mc_reminder() called | force={force}")
@@ -800,7 +802,8 @@ def check_ending_classes_reminders():
                         event_end_naive = end_dt.replace(tzinfo=None)
                         
                         if window_start_naive <= event_end_naive <= window_end_naive:
-                            from app import check_if_attendance_marked
+                            # from app import check_if_attendance_marked
+                            from elentra_client import check_if_attendance_marked
                             
                             # Always check attendance fresh first — before consulting dedup cache
                             already_marked = check_if_attendance_marked(session, event["id"], force_refresh=True, username=username)
@@ -860,7 +863,8 @@ def check_loa_rejections():
 
     try:
         from mailer import send_loa_rejection_email
-        from app import fetch_absences
+        # from app import fetch_absences
+        from elentra_client import fetch_absences
         from database import save_student_config, get_all_reminder_students
  
         # Read from database (source of truth)
