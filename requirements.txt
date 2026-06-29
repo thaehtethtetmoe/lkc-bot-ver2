@@ -1,0 +1,18 @@
+flask
+flask-cors
+requests
+beautifulsoup4
+python-dotenv
+APScheduler
+pytz
+python-dateutil
+PyPDF2
+pdfplumber
+gunicorn
+msal
+playwright
+google-generativeai
+cryptography
+
+# ── Azure Table Storage ──
+azure-data-tables>=12.5.0
