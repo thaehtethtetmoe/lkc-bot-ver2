@@ -937,60 +937,60 @@ def check_loa_rejections():
                     to_dt = datetime.fromtimestamp(r["to"]).strftime("%d %b %Y") if r.get("to") else "N/A"
                     rejected_by_ref[ref_code]["dates"].append((from_dt, to_dt))
 
-            # ── SEND ONE EMAIL PER REFERENCE CODE ──
-            for ref_code, data in rejected_by_ref.items():
-                # Format date display
-                date_ranges = data["dates"]
-                if len(date_ranges) == 1:
-                    from_date, to_date = date_ranges[0]
-                    if from_date == to_date:
-                        date_display = from_date
+                # ── SEND ONE EMAIL PER REFERENCE CODE ──
+                for ref_code, data in rejected_by_ref.items():
+                    # Format date display
+                    date_ranges = data["dates"]
+                    if len(date_ranges) == 1:
+                        from_date, to_date = date_ranges[0]
+                        if from_date == to_date:
+                            date_display = from_date
+                        else:
+                            date_display = f"{from_date} to {to_date}"
                     else:
-                        date_display = f"{from_date} to {to_date}"
-                else:
-                    # Multiple days: show full range
-                    first_from = date_ranges[0][0]
-                    last_to = date_ranges[-1][1]
-                    # Check if it's a continuous range
-                    if len(date_ranges) > 1:
-                        date_display = f"{first_from} to {last_to}"
-                    else:
-                        date_display = f"{first_from} - {last_to}"
+                        # Multiple days: show full range
+                        first_from = date_ranges[0][0]
+                        last_to = date_ranges[-1][1]
+                        # Check if it's a continuous range
+                        if len(date_ranges) > 1:
+                            date_display = f"{first_from} to {last_to}"
+                        else:
+                            date_display = f"{first_from} - {last_to}"
                     
-                    # Also list individual dates if they're not continuous
-                    if len(date_ranges) > 1:
-                        date_display += f" ({len(date_ranges)} days)"
+                        # Also list individual dates if they're not continuous
+                        if len(date_ranges) > 1:
+                            date_display += f" ({len(date_ranges)} days)"
 
-                # ── STEP 1: SAVE TO DATABASE FIRST ──
-                try:
-                    already_notified.append(ref_code)
-                    info["loa_rejection_notified"] = already_notified
+                    # ── STEP 1: SAVE TO DATABASE FIRST ──
+                    try:
+                        already_notified.append(ref_code)
+                        info["loa_rejection_notified"] = already_notified
                     
-                    save_student_config(
-                        username=username,
-                        password=info.get("password", ""),
-                        email=email,
-                        preferences=prefs,
-                        bus_config=info.get("bus_config", {}),
-                        loa_rejection_notified=already_notified
-                    )
-                    print(f"[LOA] {username}: ✅ saved notification status for ref {ref_code}")
-                except Exception as db_ex:
-                    print(f"[LOA] {username}: DB save failed: {db_ex}")
-                    continue  # Skip sending if save fails
+                        save_student_config(
+                            username=username,
+                            password=info.get("password", ""),
+                            email=email,
+                            preferences=prefs,
+                            bus_config=info.get("bus_config", {}),
+                            loa_rejection_notified=already_notified
+                        )
+                        print(f"[LOA] {username}: ✅ saved notification status for ref {ref_code}")
+                    except Exception as db_ex:
+                        print(f"[LOA] {username}: DB save failed: {db_ex}")
+                        continue  # Skip sending if save fails
 
-                # ── STEP 2: SEND EMAIL ──
-                try:
-                    send_loa_rejection_email(
-                        to_email=email,
-                        username=username,
-                        reference=ref_code,
-                        from_date=date_display,
-                        reason=data["reason"]
-                    )
-                    print(f"[LOA] {username}: ✅ rejection email sent for ref {ref_code} (consolidated {len(date_ranges)} day(s))")
-                except Exception as mail_ex:
-                    print(f"[LOA] {username}: email failed for ref {ref_code}: {mail_ex}")
+                    # ── STEP 2: SEND EMAIL ──
+                    try:
+                        send_loa_rejection_email(
+                            to_email=email,
+                            username=username,
+                            reference=ref_code,
+                            from_date=date_display,
+                            reason=data["reason"]
+                        )
+                        print(f"[LOA] {username}: ✅ rejection email sent for ref {ref_code} (consolidated {len(date_ranges)} day(s))")
+                    except Exception as mail_ex:
+                        print(f"[LOA] {username}: email failed for ref {ref_code}: {mail_ex}")
 
             except Exception as ex:
                 print(f"[LOA] {username}: check failed: {ex}")
